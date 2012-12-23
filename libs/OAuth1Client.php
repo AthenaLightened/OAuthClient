@@ -1,4 +1,6 @@
 <?php
+include_once('OAuthClient.php');
+
 // we need OAuth extension for OAuth1
 if (!class_exists('OAuth'))
 {
@@ -8,7 +10,7 @@ if (!class_exists('OAuth'))
 /**
  * An OAuth 1.0 class, wrapper for OAuth class in the OAuth extension
  */
-class OAuth1Client implements IOAuthClient
+class OAuth1Client extends OAuthClient
 {
   /**
    * Constructor
@@ -24,82 +26,75 @@ class OAuth1Client implements IOAuthClient
    *   'api_url' => 'URL FOR CALLING THE API'
    * )
    * </code>
-   * @param OAuthClient $wrapper
    */
-  public function __construct($oauth_config, $wrapper)
+  public function __construct($oauth_config)
   {
-    foreach (self::$oauthConfigKeys as $config)
-    {
-      if (empty($oauth_config[$config]))
-      {
-        $message = sprintf('%s is required for OAuth %s.', $key, $version);
-        $wrapper->log($message, OAuthClient::LOG_LEVEL_ERROR);
-
-        throw new OAuthClientException($message);
-      }
-    }
+    parent::__construct($oauth_config);
 
     $this->oauth = new OAuth($oauth_config['consumer_key'], $oauth_config['consumer_secret']);
     $this->oauthConfig = $oauth_config;
-    $this->wrapper = $wrapper;
   }
 
   /**
    * @inheritDoc
    */
-  public function getAuthorizationUrl($scope = '', $state = '', $redirect = '')
+  public function getAuthorizationUrl($params = NULL)
   {
-    $session = &$this->wrapper->getSession();
-
     $url = $this->oauthConfig['request_token_url'];
-    $params = array();
     try
     {
+      $this->log(sprintf('Getting request token from %s.', $url), OAuthClient::LOG_LEVEL_DEBUG);
+
       $request_token_info = $this->oauth->getRequestToken($url);
-      $session['token_secret'] = $request_token_info['oauth_token_secret'];
-      $params['oauth_token'] = $request_token_info['oauth_token'];
+      $token = $request_token_info['oauth_token'];
+      $secret = $request_token_info['oauth_token_secret'];
+      $authorization_url = $this->oauthConfig['authorization_url'] . '?oauth_token=' . urlencode($token);
+
+      $this->log(sprintf('Request token received from %s is (%s, %s).Authorization url is %s.', 
+                         $url, $token, $secret, $authorization_url), OAuthClient::LOG_LEVEL_DEBUG);
     }
     catch (Exception $err)
     {
-      $this->wrapper->log(sprintf('Failed to get request token at %s.', $url), OAuthClient::LOG_LEVEL_ERROR);
-      throw new OAuthClientException($err->getMessage());
+      $this->log(sprintf('Failed to get request token from %s.Error: %s', $url, $err->getMessage()));
+
+      $response_info = $this->getLastResponseInfo();
+      $http_code = empty($response_info) ? 0 : $response_info['http_code'];
+      throw new OAuthClientException($err->getMessage(), $url, $this->getLastResponse(), $http_code);
     }
 
-    return $this->oauthConfig['authorization_url'] . '?' . http_build_query($params);
+    return array($secret, $authorization_url);
   }
 
   /**
-   * Exchange for the access token
-   *
-   * @param string $code OAuth token for OAuth 1.0, Authorization Code for OAuth 2.0
-   * @return bool
+   * @inheritDoc
    */
-  public function exchangeAccessToken($code)
+  public function exchangeAccessToken($token, $secret_or_redirect_url = '')
   {
-    $session = &$this->wrapper->getSession();
-
-    if (!isset($session['token_secret']))
+    if (empty($secret_or_redirect_url))
     {
-      $this->wrapper->log('Missing token secret. Please call getAuthorizationUrl first.', OAuthClient::LOG_LEVEL_ERROR);
-      return FALSE;
+      return '';
     }
 
-    $this->oauth->setToken($code, $session['token_secret']);
+    $this->oauth->setToken($token, $secret_or_redirect_url);
     $url = $this->oauthConfig['access_token_url'];
     try
     {
-      $access_token_info = $oauth->getAccessToken($url);
+      $this->log(sprintf('Getting access token from %s.', $url), OAuthClient::LOG_LEVEL_DEBUG);
+
+      $info = $this->oauth->getAccessToken($url);
+
+      $this->log(sprintf('Access token received from %s is %s.', $url, var_export($info, TRUE)), OAuthClient::LOG_LEVEL_DEBUG);
     }
     catch (Exception $err)
     {
-      $this->wrapper->log(sprintf('Failed to get access token at %s.', $url), OAuthClient::LOG_LEVEL_ERROR);
-      throw new OAuthClientException($err->getMessage());
+      $this->log(sprintf('Failed to get access token from %s.Error: %s', $url, $err->getMessage()));
+
+      $response_info = $this->getLastResponseInfo();
+      $http_code = empty($response_info) ? 0 : $response_info['http_code'];
+      throw new OAuthClientException($err->getMessage(), $url, $this->getLastResponse(), $http_code);
     }
 
-    unset($session['token_secret']);
-    $session['token'] = $access_token_info['oauth_token'];
-    $session['secret'] = $access_token_info['oauth_token_secret'];
-    return TRUE;
+    return $info;
   }
 
   /**
@@ -110,7 +105,8 @@ class OAuth1Client implements IOAuthClient
    */
   public function setToken($token, $secret = '')
   {
-
+    $this->log(sprintf('Set token (%s, %s).', $token, $secret), OAuthClient::LOG_LEVEL_DEBUG);
+    $this->oauth->setToken($token, $secret);
   }
 
   /**
@@ -124,6 +120,30 @@ class OAuth1Client implements IOAuthClient
    */
   public function fetch($api, $params = array(), $method = 'POST', $headers = array())
   {
+    if (strtolower(substr($api, 0, 4)) !== 'http')
+    {
+      $api = $this->oauthConfig['api_url'] . $api;
+    }
+
+    $this->log(sprintf('Fetch api (%s) with params: (%s), method: %s, headers: (%s).', 
+                       $api, var_export($params, TRUE), $method, var_export($headers, TRUE)), OAuthClient::LOG_LEVEL_DEBUG);
+
+    try
+    {
+      $this->oauth->fetch($api, $params, $method, $headers);
+
+      $response = $this->getLastResponse();
+    }
+    catch (Exception $err)
+    {
+      $this->log(sprintf('Failed to fetch resource from %s.Error: %s.', $api, $err->getMessage()));
+
+      $response_info = $this->getLastResponseInfo();
+      $http_code = empty($response_info) ? 0 : $response_info['http_code'];
+      throw new OAuthClientException($err->getMessage(), $url, $this->getLastResponse(), $http_code);
+    }
+
+    return $this->decodeJSONOrQueryString($response);
   }
 
   /**
@@ -172,7 +192,7 @@ class OAuth1Client implements IOAuthClient
   ////////////////////////////////////////////////////////////////////////
 
   // Config keys for OAuth 1.0
-  private static $oauthConfigKeys = array(
+  protected $oauthConfigKeys = array(
     'consumer_key', 'consumer_secret', 'request_token_url',
     'authorization_url', 'access_token_url', 'api_url'
   );
@@ -183,6 +203,6 @@ class OAuth1Client implements IOAuthClient
   // The OAuth instance
   protected $oauth;
 
-  // The wrapper
-  protected $wrapper;
+  // Version
+  public $oauthVersion = OAuthClient::OAUTH_VERSION1;
 }

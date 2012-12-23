@@ -1,39 +1,10 @@
 <?php
+include_once('OAuthClientException.php');
+
 if (!function_exists('curl_init'))
 {
   throw new OAuthClientException('CURL PHP extension is required.');
 }
-
-include_once('IOAuthClient.php');
-include_once('OAuthClientException.php');
-
-$o1 = new OAuthClient(array(
-  'consumer_key' => '013ebe46ef976d1a',
-  'consumer_secret' => 'eda09223a9d940bba00f809b99c17171',
-  'request_token_url' => 'http://api.tudou.com/auth/request_token.oauth',
-  'authorization_url' => 'http://api.tudou.com/auth/authorize.oauth',
-  'access_token_url' => 'http://api.tudou.com/auth/access_token.oauth',
-  'api_url' => 'http://api.tudou.com/auth/verify_credentials.oauth'
-), OAuthClient::OAUTH_VERSION1);
-
-$o2 = new OAuthClient(array(
-  'client_id' => '51885333',
-  'client_secret' => 'c1b238a2f5ed43c177014fd6bcc76ee4',
-  'redirect_url' => 'http://oauth-api-tester.appspot.com',
-  'authorization_url' => 'https://api.weibo.com/oauth2/authorize',
-  'access_token_url' => 'https://api.weibo.com/oauth2/access_token',
-  'api_url' => 'https://api.weibo.com/2'
-));
-
-var_dump($o1->getAuthorizationUrl());
-echo "---------------\r\n";
-var_dump($o1->getLastResponseInfo());
-echo "---------------\r\n";
-var_dump($o1->getLastResponse());
-echo "---------------\r\n";
-var_dump($o1->getLastResponseHeaders());
-echo "---------------\r\n";
-var_dump($o2->getAuthorizationUrl());
 
 /**
  * OAuthClient class
@@ -42,29 +13,105 @@ var_dump($o2->getAuthorizationUrl());
  * 1. curl, http://php.net/manual/en/book.curl.php
  * 2. OAuth, if using OAuth 1.0, http://php.net/manual/en/book.oauth.php
  */
-class OAuthClient
+abstract class OAuthClient
 {
   /**
    * Constructor
    *
    * @param array $oauth_config
-   * @param string $version OAUTH_VERSION1 or OAUTH_VERSION2
    */
-  public function __construct($oauth_config, $version = self::OAUTH_VERSION2)
+  public function __construct($oauth_config)
   {
-    if ($version === self::OAUTH_VERSION1)
+    foreach ($this->oauthConfigKeys as $config)
     {
-      include_once('OAuth1Client.php');
-      $this->oauth = new OAuth1Client($oauth_config, $this);
-      $this->oauthVersion = $version;
-    }
-    else
-    {
-      include_once('OAuth2Client.php');
-      $this->oauth = new OAuth2Client($oauth_config, $this);
-      $this->oauthVersion = self::OAUTH_VERSION2;
+      if (empty($oauth_config[$config]))
+      {
+        $message = sprintf('%s is required for OAuth %s.', $key, $version);
+        $this->log($message);
+        throw new OAuthClientException($message);
+      }
     }
   }
+
+  ////////////////////////////////////////////////////////////////////////
+  // Abstract Methods
+  ////////////////////////////////////////////////////////////////////////
+
+  /**
+   * Get the authorization url
+   *
+   * For OAuth 1.0, the return value is an array, e.g. array(TOKEN_SECRET, AUTHORIZATION_URL),
+   * where TOKEN_SECRET is a string for later authentication, usually, it will be saved in session.
+   * and AUTHORIZATION_URL is a string for user to be redirected to.
+   *
+   * For OAuth 2.0, the return value is a string, AUTHORIZATION_URL
+   *
+   * @param array $params For OAuth 2.0, e.g. array('scope' => '', 'state' => '', $redirect => '')
+   * @return array|string
+   */
+  abstract public function getAuthorizationUrl($params = NULL);
+
+  /**
+   * Exchange for the access token
+   *
+   * For OAuth 1.0, the $token parameter is the oauth token, usually from the url,
+   * and the $secret_or_redirect_url parameter is the oauth token secret returned in getAuthorizationUrl(),
+   * usually saved in the session
+   * The return value is an array, e.g. array('oauth_token' => 'TOKEN', 'oauth_token_secret' => 'SECRET')
+   *
+   * For OAuth 2.0, the $code parameter is the authorization code, usually from the url,
+   * and the $secret_or_redirect_url parameter is the redirect url used in getAuthorizationUrl()
+   * The return value is a string.
+   *
+   * @param string $token
+   * @param string $secret_or_redirect_url
+   * @return array|string
+   */
+  abstract public function exchangeAccessToken($token, $secret_or_redirect_url = '');
+
+  /**
+   * Set the token
+   *
+   * @param string $token
+   * @param string $secret For OAuth 2.0, you may not set this parameter
+   */
+  abstract public function setToken($token, $secret = '');
+
+  /**
+   * Fetch the resource
+   *
+   * @param string $api
+   * @param array $params
+   * @param string $method
+   * @param array $headers
+   * @return mixed
+   */
+  abstract public function fetch($api, $params = array(), $method = 'POST', $headers = array());
+
+  /**
+   * Get the http info in the last response
+   *
+   * @return array
+   */
+  abstract public function getLastResponseInfo();
+
+  /**
+   * Get the last response
+   *
+   * @return string
+   */
+  abstract public function getLastResponse();
+
+  /**
+   * Get the last response headers
+   *
+   * @return string
+   */
+  abstract public function getLastResponseHeaders();
+
+  ////////////////////////////////////////////////////////////////////////
+  // Common Methods
+  ////////////////////////////////////////////////////////////////////////
 
   /**
    * Set the Logger
@@ -73,7 +120,10 @@ class OAuthClient
    */
   public function setLogger($logger)
   {
-    $this->logger = $logger;
+    if (is_callable($logger))
+    {
+      $this->logger = $logger;
+    }
   }
 
   /**
@@ -82,7 +132,7 @@ class OAuthClient
    * @param string $message
    * @param string $level
    */
-  protected function log($message, $level = self::LOG_LEVEL_DEBUG)
+  protected function log($message, $level = self::LOG_LEVEL_ERROR)
   {
     if ($this->logger)
     {
@@ -91,35 +141,29 @@ class OAuthClient
   }
 
   /**
-   * Get the session, start if not started yet
+   * Get an array from a json string or query string
    *
-   * @return array
+   * @param string $str
+   * @return array|string
    */
-  public function &getSession()
+  protected function decodeJSONOrQueryString($str)
   {
-    // start session
-    if (session_id() === '')
+    $decoded = json_decode($str, TRUE);
+    if ((version_compare(PHP_VERSION, '5.3.0') >= 0 && json_last_error() !== JSON_ERROR_NONE)
+      || $decoded === NULL)
     {
-      session_start();
+      if (strpos($str, '=') !== FALSE)
+      {
+        $decoded = array();
+        parse_str($str, $decoded);
+      }
+      else
+      {
+        $decoded = $str;
+      }
     }
 
-    if (!isset($_SESSION[$this->sessionKey]))
-    {
-      $_SESSION[$this->sessionKey] = array();
-    }
-
-    return $_SESSION[$this->sessionKey];
-  }
-
-  /**
-   * Magic functions to pass to the wrapped OAuthClient instance
-   *
-   * @param string $name
-   * @param array $arguments
-   */
-  public function __call($name, $arguments)
-  {
-    return call_user_func_array(array($this->oauth, $name), $arguments);
+    return $decoded;
   }
 
   ////////////////////////////////////////////////////////////////////////
@@ -129,14 +173,8 @@ class OAuthClient
   // The OAuth version
   public $oauthVersion;
 
-  // The OAuth instance
-  protected $oauth;
-
   // The logger
   protected $logger;
-
-  // Session key to save
-  public $sessionKey = 'OAuthClient';
 
   const OAUTH_VERSION1 = '1.0';
   const OAUTH_VERSION2 = '2.0';
