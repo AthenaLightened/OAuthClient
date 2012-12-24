@@ -26,7 +26,7 @@ abstract class OAuthClient
     {
       if (empty($oauth_config[$config]))
       {
-        $message = sprintf('%s is required for OAuth %s.', $key, $version);
+        $message = sprintf('%s is required.', $config);
         $this->log($message);
         throw new OAuthClientException($message);
       }
