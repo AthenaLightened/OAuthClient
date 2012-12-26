@@ -32,7 +32,7 @@ class OAuth1Client extends OAuthClient
     parent::__construct($oauth_config);
 
     $this->oauth = new OAuth($oauth_config['consumer_key'], $oauth_config['consumer_secret']);
-    $this->oauthConfig = $oauth_config;
+    $this->oauth->disableSSLChecks();
   }
 
   /**
@@ -45,7 +45,15 @@ class OAuth1Client extends OAuthClient
     {
       $this->log(sprintf('Getting request token from %s.', $url), OAuthClient::LOG_LEVEL_DEBUG);
 
-      $request_token_info = $this->oauth->getRequestToken($url);
+      if (!empty($params) && !empty($params['callback_url']))
+      {
+        $request_token_info = $this->oauth->getRequestToken($url, $params['callback_url']);
+      }
+      else
+      {
+        $request_token_info = $this->oauth->getRequestToken($url);
+      }
+
       $token = $request_token_info['oauth_token'];
       $secret = $request_token_info['oauth_token_secret'];
       $authorization_url = $this->oauthConfig['authorization_url'] . '?oauth_token=' . urlencode($token);
@@ -56,10 +64,7 @@ class OAuth1Client extends OAuthClient
     catch (Exception $err)
     {
       $this->log(sprintf('Failed to get request token from %s.Error: %s', $url, $err->getMessage()));
-
-      $response_info = $this->getLastResponseInfo();
-      $http_code = empty($response_info) ? 0 : $response_info['http_code'];
-      throw new OAuthClientException($err->getMessage(), $url, $this->getLastResponse(), $http_code);
+      $this->throwException($url, $err);
     }
 
     return array($secret, $authorization_url);
@@ -70,11 +75,6 @@ class OAuth1Client extends OAuthClient
    */
   public function exchangeAccessToken($token, $secret_or_redirect_url = '')
   {
-    if (empty($secret_or_redirect_url))
-    {
-      return '';
-    }
-
     $this->oauth->setToken($token, $secret_or_redirect_url);
     $url = $this->oauthConfig['access_token_url'];
     try
@@ -88,10 +88,7 @@ class OAuth1Client extends OAuthClient
     catch (Exception $err)
     {
       $this->log(sprintf('Failed to get access token from %s.Error: %s', $url, $err->getMessage()));
-
-      $response_info = $this->getLastResponseInfo();
-      $http_code = empty($response_info) ? 0 : $response_info['http_code'];
-      throw new OAuthClientException($err->getMessage(), $url, $this->getLastResponse(), $http_code);
+      $this->throwException($url, $err);
     }
 
     return $info;
@@ -125,22 +122,19 @@ class OAuth1Client extends OAuthClient
       $api = $this->oauthConfig['api_url'] . $api;
     }
 
-    $this->log(sprintf('Fetch api (%s) with params: (%s), method: %s, headers: (%s).', 
-                       $api, var_export($params, TRUE), $method, var_export($headers, TRUE)), OAuthClient::LOG_LEVEL_DEBUG);
+    $log_message = 'Fetch api (%s) with params: (%s), method: %s, headers: (%s).';
+    $log_message = sprintf($log_message, $api, var_export($params, TRUE), $method, var_export($headers, TRUE));
+    $this->log($log_message, OAuthClient::LOG_LEVEL_DEBUG);
 
     try
     {
       $this->oauth->fetch($api, $params, $method, $headers);
-
       $response = $this->getLastResponse();
     }
     catch (Exception $err)
     {
       $this->log(sprintf('Failed to fetch resource from %s.Error: %s.', $api, $err->getMessage()));
-
-      $response_info = $this->getLastResponseInfo();
-      $http_code = empty($response_info) ? 0 : $response_info['http_code'];
-      throw new OAuthClientException($err->getMessage(), $url, $this->getLastResponse(), $http_code);
+      $this->throwException($url, $err);
     }
 
     return $this->decodeJSONOrQueryString($response);
@@ -196,9 +190,6 @@ class OAuth1Client extends OAuthClient
     'consumer_key', 'consumer_secret', 'request_token_url',
     'authorization_url', 'access_token_url', 'api_url'
   );
-
-  // The OAuth Config passed in the constructor
-  public $oauthConfig;
 
   // The OAuth instance
   protected $oauth;

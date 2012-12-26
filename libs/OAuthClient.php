@@ -7,7 +7,7 @@ if (!function_exists('curl_init'))
 }
 
 /**
- * OAuthClient class
+ * OAuthClient class, base class for OAuth1Client and OAuth2Client
  *
  * Requirement:
  * 1. curl, http://php.net/manual/en/book.curl.php
@@ -27,10 +27,11 @@ abstract class OAuthClient
       if (empty($oauth_config[$config]))
       {
         $message = sprintf('%s is required.', $config);
-        $this->log($message);
         throw new OAuthClientException($message);
       }
     }
+
+    $this->oauthConfig = $oauth_config;
   }
 
   ////////////////////////////////////////////////////////////////////////
@@ -40,13 +41,15 @@ abstract class OAuthClient
   /**
    * Get the authorization url
    *
-   * For OAuth 1.0, the return value is an array, e.g. array(TOKEN_SECRET, AUTHORIZATION_URL),
+   * For OAuth 1.0, the params is an array like this: array('callback_url')
+   * the return value is an array, e.g. array(TOKEN_SECRET, AUTHORIZATION_URL),
    * where TOKEN_SECRET is a string for later authentication, usually, it will be saved in session.
-   * and AUTHORIZATION_URL is a string for user to be redirected to.
+   * and AUTHORIZATION_URL is a url string that user will be redirected to.
    *
-   * For OAuth 2.0, the return value is a string, AUTHORIZATION_URL
+   * For OAuth 2.0, the params is an array like this: array('scope' => '', 'state' => '', 'redirect' => '')
+   * the return value is a string, AUTHORIZATION_URL
    *
-   * @param array $params For OAuth 2.0, e.g. array('scope' => '', 'state' => '', $redirect => '')
+   * @param array $params 
    * @return array|string
    */
   abstract public function getAuthorizationUrl($params = NULL);
@@ -54,18 +57,16 @@ abstract class OAuthClient
   /**
    * Exchange for the access token
    *
-   * For OAuth 1.0, the $token parameter is the oauth token, usually from the url,
-   * and the $secret_or_redirect_url parameter is the oauth token secret returned in getAuthorizationUrl(),
-   * usually saved in the session
+   * For OAuth 1.0, the $token parameter is the oauth token, usually from the redirect url from server,
+   * and the $secret_or_redirect_url parameter is the oauth token secret returned by getAuthorizationUrl(),
    * The return value is an array, e.g. array('oauth_token' => 'TOKEN', 'oauth_token_secret' => 'SECRET')
    *
    * For OAuth 2.0, the $code parameter is the authorization code, usually from the url,
    * and the $secret_or_redirect_url parameter is the redirect url used in getAuthorizationUrl()
-   * The return value is a string.
    *
    * @param string $token
    * @param string $secret_or_redirect_url
-   * @return array|string
+   * @return array
    */
   abstract public function exchangeAccessToken($token, $secret_or_redirect_url = '');
 
@@ -116,7 +117,7 @@ abstract class OAuthClient
   /**
    * Set the Logger
    * 
-   * @param callable $logger The logger should look like function ($message, $level)
+   * @param callable $logger The signature is func($message, $level)
    */
   public function setLogger($logger)
   {
@@ -166,12 +167,28 @@ abstract class OAuthClient
     return $decoded;
   }
 
+  /**
+   * Throw an exception
+   *
+   * @param string $url
+   * @param Exception $err
+   */
+  protected function throwException($url, $err)
+  {
+    $response_info = $this->getLastResponseInfo();
+    $http_code = empty($response_info) ? 0 : $response_info['http_code'];
+    throw new OAuthClientException($err->getMessage(), $url, $this->getLastResponse(), $http_code);
+  }
+
   ////////////////////////////////////////////////////////////////////////
   // Properties
   ////////////////////////////////////////////////////////////////////////
 
   // The OAuth version
   public $oauthVersion;
+
+  // The config
+  public $oauthConfig;
 
   // The logger
   protected $logger;

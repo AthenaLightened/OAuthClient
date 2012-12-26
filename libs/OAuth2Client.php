@@ -24,8 +24,6 @@ class OAuth2Client extends OAuthClient
   public function __construct($oauth_config)
   {
     parent::__construct($oauth_config);
-
-    $this->oauthConfig = $oauth_config;
   }
 
   /**
@@ -72,18 +70,19 @@ class OAuth2Client extends OAuthClient
     $query['grant_type'] = 'authorization_code';
     $query['code'] = $token;
 
+    $url = $this->oauthConfig['access_token_url'];
     try
     {
-      $url = $this->oauthConfig['access_token_url'];
+      $this->log(sprintf('Getting access token from %s.', $url), OAuthClient::LOG_LEVEL_DEBUG);
+
       $response = $this->sendRequest($url, $query, 'POST');
+
+      $this->log(sprintf('Access token received from %s is %s.', $url, var_export($response, TRUE)), OAuthClient::LOG_LEVEL_DEBUG);
     }
     catch (Exception $err)
     {
       $this->log(sprintf('Failed to get access token from %s.Error: %s', $url, $err->getMessage()));
-
-      $response_info = $this->getLastResponseInfo();
-      $http_code = empty($response_info) ? 0 : $response_info['http_code'];
-      throw new OAuthClientException($err->getMessage(), $url, $this->getLastResponse(), $http_code);
+      $this->throwException($url, $err);
     }
 
     return $response;
@@ -97,6 +96,7 @@ class OAuth2Client extends OAuthClient
    */
   public function setToken($token, $secret = '')
   {
+    $this->log(sprintf('Set access token %s.', $token), OAuthClient::LOG_LEVEL_DEBUG);
     $this->accessToken = $token;
   }
 
@@ -118,6 +118,10 @@ class OAuth2Client extends OAuthClient
 
     $params['client_id'] = $this->oauthConfig['client_id'];
     $params['access_token'] = $this->accessToken;
+
+    $log_message = 'Fetch api (%s) with params: (%s), method: %s, headers: (%s).';
+    $log_message = sprintf($log_message, $api, var_export($params, TRUE), $method, var_export($headers, TRUE));
+    $this->log($log_message, OAuthClient::LOG_LEVEL_DEBUG);
 
     return $this->sendRequest($api, $params, $method, $headers);
   }
@@ -212,8 +216,22 @@ class OAuth2Client extends OAuthClient
     $ch = curl_init();
     curl_setopt_array($ch, $opts);
     $response = curl_exec($ch);
-    list($this->lastResponseHeaders, $this->lastResponse) = explode("\r\n\r\n", $response);
-    $this->lastResponseInfo = curl_getinfo($ch);
+
+    $error_code = curl_errno($ch);
+    if ($error_code !== 0)
+    {
+      $this->lastResponseHeaders = '';
+      $this->lastResponse = '';
+      $this->lastResponseInfo = curl_getinfo($ch);
+
+      $error_message = curl_error($ch);
+      $this->throwException($url, new Exception($error_message, $error_code));
+    }
+    else
+    {
+      list($this->lastResponseHeaders, $this->lastResponse) = explode("\r\n\r\n", $response);
+      $this->lastResponseInfo = curl_getinfo($ch);
+    }
     curl_close($ch);
 
     // decode response
@@ -224,18 +242,21 @@ class OAuth2Client extends OAuthClient
     // If the status code >= 400, it will be considered as an error
     // Or if there is an error key in the response, it will be considered as an error too
     $error = '';
-    if (is_string($response))
+    if (is_array($response))
     {
-      $error = $response;
-    }
-    else if (is_array($response) && !empty($response['error']))
-    {
-      $error = $response['error'];
+      if (!empty($response['error']))
+      {
+        $error = is_array($response['error']) ? json_encode($response['error']) : $response['error'];
+      }
+      else if (!empty($response['error_description']))
+      {
+        $error = $response['error_description'];
+      }
     }
 
     if ($error || $http_code >= 400)
     {
-      throw new OAuthClientException($error, $url, $this->getLastResponse(), $http_code);
+      $this->throwException($url, new Exception($error));
     }
 
     return $response;
@@ -251,9 +272,6 @@ class OAuth2Client extends OAuthClient
     'client_id', 'client_secret', 'redirect_url',
     'authorization_url', 'access_token_url', 'api_url'
   );
-
-  // The OAuth Config passed in the constructor
-  public $oauthConfig;
 
   // Last Response Header
   protected $lastResponseHeaders;

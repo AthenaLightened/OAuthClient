@@ -49,7 +49,7 @@ catch (OAuthClientException $err)
 </head>
 <body>
 <?php if ($me):?>
-<p>I am <?php echo htmlentities($me['nickName']);?>.<a href="?logout=1">Logout</a><p>
+<p>I am <?php echo htmlentities($me['nickName'], ENT_COMPAT, 'UTF-8');?>.<a href="?logout=1">Logout</a><p>
 <?php else: ?>
 <a href="<?php echo $authorization_url;?>">Login to tudou</a>
 <?php endif;?>
