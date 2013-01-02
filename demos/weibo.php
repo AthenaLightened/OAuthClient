@@ -1,66 +1,59 @@
 <?php
 session_start();
-include_once('../libs/OAuthClientFactory.php');
-$weibo = OAuthClientFactory::weibo('2190273302', '5ab2cf740ba174e198d72a63cca20c9b', 'http://php.localhost/OAuthClient/demos/weibo.php');
+include_once('../src/OAuth2Client.php');
+$client = new OAuth2Client(array(
+  'client_id' => '2190273302',
+  'client_secret' => '5ab2cf740ba174e198d72a63cca20c9b',
+  'redirection_endpoint' => 'http://php.localhost/OAuthClient/demos/weibo.php',
+  'authorization_endpoint' => 'https://api.weibo.com/oauth2/authorize',
+  'token_endpoint' => 'https://api.weibo.com/oauth2/access_token',
+  'resource_endpoint' => 'https://api.weibo.com/2/'
+));
 
-// logout
-if (!empty($_GET['logout']))
-{
-  $_SESSION = array();
-}
-
-$err = NULL;
-$me = NULL;
-$posted_weibo = NULL;
 try
 {
-  $authorization_url = $weibo->getAuthorizationUrl();
-  if (isset($_GET['code']) && empty($_SESSION['weibo']))
+  if (isset($_GET['logout']))
   {
-    // exchange the token
-    $token = $weibo->exchangeAccessToken($_GET['code']);
-
-    $_SESSION['weibo'] = $token;
-
-    // set the token
-    $weibo->setToken($token['access_token']);
-
-    // send a weibo
-    $posted_weibo = $weibo->fetch('statuses/upload.json', array(
-      'status' => 'Hello world! at ' . date('Y-m-d H:i:s'),
-      '@pic' => '@' . realpath('./php.gif')
-    ), 'POST');
+    $_SESSION['client'] = array();
   }
 
-  if (!empty($_SESSION['weibo']))
+  if (empty($_SESSION['client']))
   {
-    $weibo->setToken($_SESSION['weibo']['access_token']);
-    $me = $weibo->fetch('users/show.json', array('uid' => $_SESSION['weibo']['uid']), 'GET');
+    $client->exchangeAccessToken();
+
+    $access_token = $client->getAccessToken();
+    if (empty($access_token))
+    {
+      header('Location: ' . $client->getAuthorizationUrl());
+      exit();
+    }
+
+    $_SESSION['client'] = $access_token;
+  }
+
+  if (!empty($_SESSION['client']))
+  {
+    $client->setAccessToken($_SESSION['client']);
+    var_dump($client->fetch('account/get_uid.json', array(), 'GET'));
   }
 }
 catch (OAuthClientException $err)
 {
-  // do nothing;
+  $error = $err->getError();
+
+  echo "<p>OAuthClient Exception: </p>";
+  echo sprintf("<p>Url: %s</p>", empty($err->url) ? '<EMPTY>' : htmlspecialchars($err->url));
+  echo sprintf("<p>Response code: %d</p>", $err->getCode());
+  echo sprintf("<p>Response: %s</p>", empty($err->response) ? '<EMPTY>' : htmlspecialchars($err->response));
+  echo sprintf("<p>Error: %s</p>", htmlspecialchars($error['error']));
+
+  if ($err->getErrorDescription())
+  {
+    echo sprintf("<p>Error Description: %s</p>", htmlspecialchars($err->getErrorDescription()));
+  }
+
+  if ($err->getErrorUri())
+  {
+    echo sprintf("<p>Error Uri: %s</p>", htmlspecialchars($err->getErrorUri()));
+  }
 }
-?>
-<html>
-<head>
-</head>
-<body>
-<?php if ($me):?>
-<p>I am <?php echo htmlentities($me['name'], ENT_COMPAT, 'UTF-8');?>.<a href="?logout=1">Logout</a><p>
-<?php else: ?>
-<a href="<?php echo $authorization_url;?>">Login to weibo</a>
-<?php endif;?>
-
-<?php if ($posted_weibo):?>
-<p>Posted: <?php echo $posted_weibo['idstr'];?></p>
-<p><a href="http://weibo.com/u/<?php echo $_SESSION['weibo']['uid'];?>" target="_blank">Click to view the posted weibo.</a></p>
-<?php endif;?>
-
-<?php if ($err):?>
-<p>Error: </p>
-<p><?php echo var_export($err, TRUE);?></p>
-<?php endif;?>
-</body>
-</html>
