@@ -13,11 +13,24 @@ if (!function_exists('json_encode'))
 
 /**
  * An OAuth 2.0 client class
+ *
+ * Support:
+ * Grant type: authorization code, http://tools.ietf.org/html/rfc6749#section-1.3
+ * Token type: default, bearer, http://tools.ietf.org/html/draft-ietf-oauth-v2-bearer-23
  */
 class OAuth2Client
 {
   /**
    * Constructor
+   *
+   * oauth_config
+   *   client_id, required 
+   *   client_secret, required
+   *   redirection_endpoint, required
+   *   authorization_endpoint, required
+   *   token_endpoint, required
+   *   scope, optional
+   *   resource_endpoint, optional
    *
    * @param array $oauth_config
    * @param array $options
@@ -30,7 +43,7 @@ class OAuth2Client
     {
       if (!isset($oauth_config[$key]))
       {
-        throw new OAuthClientException('OAuth config (' . $key . ') is required.');
+        throw new OAuthClientException('OAuth config "' . $key . '" is required.');
       }
 
       $this->$key = $oauth_config[$key];
@@ -46,6 +59,7 @@ class OAuth2Client
       $this->resource_endpoint = $oauth_config['resource_endpoint'];
     }
 
+    // set other options
     foreach ($options as $k => $v)
     {
       if (property_exists($this, $k))
@@ -58,7 +72,7 @@ class OAuth2Client
   /**
    * Get the authorization url
    *
-   * @see http://tools.ietf.org/html/rfc6749#section-4.1
+   * @link http://tools.ietf.org/html/rfc6749#section-4.1
    * @param string $scope
    * @param string $state
    * @param string $redirect_uri
@@ -147,7 +161,7 @@ class OAuth2Client
     switch ($this->getAccessTokenType())
     {
       case self::TOKEN_TYPE_DEFAULT:
-      $params['client_id'] = $this->client_id;
+      $params[$this->key_client_id] = $this->client_id;
       $params['access_token'] = $access_token['access_token'];
       break;
 
@@ -180,7 +194,7 @@ class OAuth2Client
       break;
 
       default:
-      throw new OAuthClientException('Access token type (' . $this->getAccessTokenType() . ') is not supported.');
+      throw new OAuthClientException('Access token type "' . $this->getAccessTokenType() . '" is not supported.');
     }
   }
 
@@ -251,6 +265,7 @@ class OAuth2Client
       }
       else
       {
+        // will never expires
         return PHP_INT_MAX;
       }
     }
@@ -329,9 +344,9 @@ class OAuth2Client
         $code = isset($_GET[$this->key_code]) ? $_GET[$this->key_code] : '';
       }
 
+      // check the error in the $_GET
       if ($code === '')
       {
-        // check the error in the $_GET
         $error = $this->extractError($_GET);
         if ($error === FALSE)
         {
@@ -343,6 +358,7 @@ class OAuth2Client
 
       $query = array();
       $headers = array();
+      $method = 'POST';
       if ($this->client_authentication_type === self::CLIENT_AUTHENTICATION_TYPE_REQUEST_BODY)
       {
         $query['client_id'] = $this->client_id;
@@ -356,7 +372,7 @@ class OAuth2Client
       $query['grant_type'] = 'authorization_code';
       $query['code'] = $code;
 
-      $this->sendRequest($this->token_endpoint, $query, 'POST', $headers);
+      $this->sendRequest($this->token_endpoint, $query, $method, $headers);
       break;
 
       default:
@@ -435,6 +451,7 @@ class OAuth2Client
   // Last Request & Response
   ////////////////////////////////////////////////////////////////////////
 
+  protected $last_request_params;
   protected $last_response_headers;
   protected $last_response_info;
   protected $last_response;
@@ -455,6 +472,16 @@ class OAuth2Client
     {
       return $response_info['request_header'];
     }
+  }
+
+  /**
+   * Get the last request params
+   *
+   * @return array
+   */
+  public function getLastRequestParams()
+  {
+    return $this->last_request_params;
   }
 
   /**
@@ -533,6 +560,7 @@ class OAuth2Client
       if (!empty($params))
       {
         $url .= (strpos($url, '?') === FALSE ? '?' : '&') . http_build_query($params);
+        $this->last_request_params = array();
       }
       break;
       
@@ -548,6 +576,8 @@ class OAuth2Client
           break;
         }
       }
+
+      $this->last_request_params = $params;
 
       // multipart/form-data if there is a file for uploading
       $opts[CURLOPT_POSTFIELDS] = $has_file ? $params : http_build_query($params);
@@ -596,24 +626,32 @@ class OAuth2Client
     $response_info = $this->getLastResponseInfo();
     $response_code = $this->getLastResponseCode();
 
-    // handle 'text/html' and 'text/html;charset=UTF-8'
-    $content_type = trim(current(explode(';', $response_info['content_type'])));
-
-    switch ($content_type)
+    // some OAuth2 implementations don't use a correct content type
+    if ($this->ignore_response_content_type)
     {
-      case 'text/html':
-      // assign the value back
-      parse_str($response, $response);
-      break;
-
-      case 'text/javascript':
-      case 'application/json':
-      $response = json_decode($response, TRUE);
-      break;
-
-      default:
       $response = $this->decodeJSONOrQueryString($response);
-      break;
+    }
+    else
+    {
+      // handle 'text/html' and 'text/html;charset=UTF-8'
+      $content_type = trim(current(explode(';', $response_info['content_type'])));
+
+      switch ($content_type)
+      {
+        case 'text/html':
+        // assign the value back
+        parse_str($response, $response);
+        break;
+
+        case 'text/javascript':
+        case 'application/json':
+        $response = json_decode($response, TRUE);
+        break;
+
+        default:
+        $response = $this->decodeJSONOrQueryString($response);
+        break;
+      }
     }
 
     if ($response_code >= 400 || empty($response))
@@ -686,12 +724,68 @@ class OAuth2Client
     return $decoded;
   }
 
+  /**
+   * Factory method
+   *
+   * @param string $platform
+   * @param array $oauth_config
+   * @param array $options
+   */
+  public static function create($platform, $oauth_config, $options = array())
+  {
+    switch (strtolower($platform))
+    {
+      case 'sina':
+      case 'weibo':
+      $oauth_config['authorization_endpoint'] = 'https://api.weibo.com/oauth2/authorize';
+      $oauth_config['token_endpoint'] = 'https://api.weibo.com/oauth2/access_token';
+      $oauth_config['resource_endpoint'] = 'https://api.weibo.com/2/';
+      break;
+
+      case 't':
+      case 'qq':
+      $oauth_config['authorization_endpoint'] = 'https://open.t.qq.com/cgi-bin/oauth2/authorize';
+      $oauth_config['token_endpoint'] = 'https://open.t.qq.com/cgi-bin/oauth2/access_token';
+      $oauth_config['resource_endpoint'] = 'https://open.t.qq.com/api/';
+      $options['key_client_id'] = 'oauth_consumer_key';
+      break;
+
+      case 'renren':
+      $oauth_config['authorization_endpoint'] = 'https://graph.renren.com/oauth/authorize';
+      $oauth_config['token_endpoint'] = 'https://graph.renren.com/oauth/token';
+      $oauth_config['resource_endpoint'] = 'http://api.renren.com/restserver.do';
+      break;
+
+      case 'baidu':
+      $oauth_config['authorization_endpoint'] = 'https://openapi.baidu.com/oauth/2.0/authorize';
+      $oauth_config['token_endpoint'] = 'https://openapi.baidu.com/oauth/2.0/token';
+      $oauth_config['resource_endpoint'] = 'https://openapi.baidu.com/rest/2.0';
+      break;
+
+      case 'facebook':
+      $oauth_config['authorization_endpoint'] = 'https://www.facebook.com/dialog/oauth';
+      $oauth_config['token_endpoint'] = 'https://graph.facebook.com/oauth/access_token';
+      $oauth_config['resource_endpoint'] = 'https://graph.facebook.com/';
+      break;
+
+      case 'google':
+      break;
+
+
+      default:
+      throw new OAuthClientException('Platform "' . $platform . '" is not supported');
+    }
+
+    return new self($oauth_config, $options);
+  }
+
+
   ////////////////////////////////////////////////////////////////////////
   // Properties
   ////////////////////////////////////////////////////////////////////////
 
   // oauth 2, properties
-  // @see http://tools.ietf.org/html/rfc6749
+  // @link http://tools.ietf.org/html/rfc6749
   protected $client_id;
   protected $client_secret;
   protected $redirection_endpoint;
@@ -704,30 +798,34 @@ class OAuth2Client
   protected $client_authentication_type = self::CLIENT_AUTHENTICATION_TYPE_REQUEST_BODY;
 
   // key properties
+  protected $key_client_id = 'client_id';
   protected $key_state = 'state';
   protected $key_code = 'code';
   protected $key_error = 'error';
   protected $key_error_description = 'error_description';
   protected $key_error_uri = 'error_uri';
 
+  // flags
+  protected $ignore_response_content_type = FALSE;
+
   ////////////////////////////////////////////////////////////////////////
   // Consts
   ////////////////////////////////////////////////////////////////////////
   
-  // @see http://tools.ietf.org/html/rfc6749#section-1.3
+  // @link http://tools.ietf.org/html/rfc6749#section-1.3
   const GRANT_TYPE_AUTHORIZATION_CODE = 'authorization_code';
 
-  // @see http://tools.ietf.org/html/rfc6749#section-2.3
+  // @link http://tools.ietf.org/html/rfc6749#section-2.3
   const CLIENT_AUTHENTICATION_TYPE_AUTHORIZATION = 'authorization';
   const CLIENT_AUTHENTICATION_TYPE_REQUEST_BODY = 'request_body';
 
-  // @see http://tools.ietf.org/html/rfc6749#section-7.1
+  // @link http://tools.ietf.org/html/rfc6749#section-7.1
   // @see appendAccessToken
   const TOKEN_TYPE_DEFAULT = 'default';
   const TOKEN_TYPE_BEARER = 'bearer';
   const TOKEN_TYPE_MAC = 'mac';
 
-  // @see http://tools.ietf.org/html/rfc6750#section-2
+  // @link http://tools.ietf.org/html/rfc6750#section-2
   const TOKEN_AUTHENTICATE_TYPE_AUTHORIZATION = 'authorization';
   const TOKEN_AUTHENTICATE_TYPE_FORM_BODY = 'form_body';
   const TOKEN_AUTHENTICATE_TYPE_URI_QUERY = 'uri_query';
